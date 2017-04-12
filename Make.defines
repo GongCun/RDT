@@ -1,0 +1,20 @@
+override CFLAGS += -I../lib -g $(shell ../cflags.sh | cut -d'%' -f1)
+LIBS = $(shell ../cflags.sh | cut -d'%' -f2)
+define \n
+
+
+endef
+ifeq ($(LIBS), )
+$(error Can't find the libpcap${\n}You can export LIBDIR=<lib dir> to search the library)
+endif
+LIBS := ../libtcpi.a $(LIBS)
+
+PLATFORM = $(shell uname -s | tr 'a-z' 'A-Z')
+ifeq ($(PLATFORM),AIX)
+AROPT = -rv -Xany
+else
+AROPT = rv
+endif
+
+CLEANFILES = core core.* *.core *.o temp.* *.a *.so configure config.log config.status auto* config.h.in* *.BAK *~ *.dSYM
+
