@@ -8,11 +8,11 @@ struct ifi_info *get_ifi_info(void)
     int sockfd, len, lastlen;
     char *buf, *cptr;
 
-    sockfd = xsocket(AF_INET, SOCK_DGRAM, 0);
+    sockfd = Socket(AF_INET, SOCK_DGRAM, 0);
     lastlen = 0;
     len = 100 * sizeof(struct ifreq); /* initial buffer size guess */
     for (;;) {
-        buf = xmalloc(len);
+        buf = Malloc(len);
         ifc.ifc_len = len;
         ifc.ifc_buf = buf;
 
@@ -92,18 +92,18 @@ struct ifi_info *get_ifi_info(void)
         ifrcopy = *ifr;
 
         int flags;
-        xioctl(sockfd, SIOCGIFFLAGS, &ifrcopy);
+        Ioctl(sockfd, SIOCGIFFLAGS, &ifrcopy);
         flags = ifrcopy.ifr_flags;
         if ((flags & IFF_UP) == 0)
             continue; /* ignore if interface not up */
 
-        pifi = xcalloc(1, sizeof(struct ifi_info));
+        pifi = Calloc(1, sizeof(struct ifi_info));
         *ppifinext = pifi;
         ppifinext = &pifi->ifi_next; /* pointer to next one
                                        goes here */
         pifi->ifi_flags = flags;
 #if defined(SIOCGIFMTU) && defined(HAVE_STRUCT_IFREQ_IFR_MTU)
-        xioctl(sockfd, SIOCGIFMTU, &ifrcopy);
+        Ioctl(sockfd, SIOCGIFMTU, &ifrcopy);
         pifi->ifi_mtu = ifrcopy.ifr_mtu;
 #else
         pifi->ifi_mtu = 0;
@@ -113,7 +113,7 @@ struct ifi_info *get_ifi_info(void)
 
         /* Get sock address */
         sinptr = (struct sockaddr_in *)&ifr->ifr_addr;
-        pifi->ifi_addr = xcalloc(1, sizeof(struct sockaddr_in));
+        pifi->ifi_addr = Calloc(1, sizeof(struct sockaddr_in));
         memcpy(pifi->ifi_addr, sinptr, sizeof(struct sockaddr_in));
 
         /* Get mac address */
@@ -141,18 +141,18 @@ struct ifi_info *get_ifi_info(void)
             memcpy(pifi->ifi_haddr, haddr, hlen);
 #ifdef SIOCGIFBRDADDR
         if (flags & IFF_BROADCAST) {
-            xioctl(sockfd, SIOCGIFBRDADDR, &ifrcopy);
+            Ioctl(sockfd, SIOCGIFBRDADDR, &ifrcopy);
             sinptr = (struct sockaddr_in *)&ifrcopy.ifr_broadaddr;
-            pifi->ifi_brdaddr = xcalloc(1, sizeof(struct sockaddr_in));
+            pifi->ifi_brdaddr = Calloc(1, sizeof(struct sockaddr_in));
             memcpy(pifi->ifi_brdaddr, sinptr, sizeof(struct sockaddr_in));
         }
 #endif
 
 #ifdef SIOCGIFDSTADDR
         if (flags & IFF_POINTOPOINT) {
-            xioctl(sockfd, SIOCGIFDSTADDR, &ifrcopy);
+            Ioctl(sockfd, SIOCGIFDSTADDR, &ifrcopy);
             sinptr = (struct sockaddr_in *)&ifrcopy.ifr_dstaddr;
-            pifi->ifi_dstaddr = xcalloc(1, sizeof(struct sockaddr_in));
+            pifi->ifi_dstaddr = Calloc(1, sizeof(struct sockaddr_in));
             memcpy(pifi->ifi_dstaddr, sinptr, sizeof(struct sockaddr_in));
         }
 #endif

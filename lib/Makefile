@@ -10,8 +10,6 @@ LIB_OBJS = error.o wrapunix.o get_ifi_info.o free_ifi_info.o \
 	   signal_func.o ux.o
 
 all:	${LIB_OBJS}
-
-$(LIBTCPI): $(LIB_OBJS)
 	$(AR) rv $(LIBTCPI) $?
 	${RANLIB} ${LIBTCPI}
 

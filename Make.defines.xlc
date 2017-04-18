@@ -7,12 +7,12 @@
 #              you have headers in a nonstandard directory <include dir>
 #  CPP         C preprocesso
 
-LIBTCPI = $(ROOT)/libtcpi.a
+LIBTCPI=$(ROOT)/libtcpi.a
 PLATFORM=$(shell uname -s | tr '[:lower:]' '[:upper:]')
 override CFLAGS += -D_$(PLATFORM) -g \
-	 	   -qflag=i:i -qinfo=use:nouset:noeff
-override LIBS += $(LIBTCPI)
-override CPPFLAGS += -I$(ROOT)/lib
+	 	   -qflag=i:i -qinfo=use:nouse:noeff
+override CPPFLAGS += -I$(ROOT)/lib -I$(ROOT)
+LIBS=$(LIBTCPI) -lpcap
 
 CC=xlc
 COMPILE.c=$(CC) $(CFLAGS) $(CPPFLAGS) -c
@@ -23,5 +23,5 @@ AR=ar
 AWK=awk
 
 CLEANFILES = core core.* *.core *.o temp.* *.a *.so configure config.log \
-	     config.status auto* config.h.in* *.BAK *~ *.dSYM config.h
+	     config.status auto* config.h.in* *.BAK *~ *.dSYM 
 

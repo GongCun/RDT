@@ -52,15 +52,18 @@
 #endif
 #include <net/route.h> /* struct rt_msghdr ... */
 #include <arpa/inet.h>
-#ifdef HAVE_PCAP_H
-#include <pcap.h>
-#endif
+
 #if defined(_AIX) || defined(_AIX64)
 #include <net/bpf.h>
 #include <netinet/if_ether.h>
 #else
 #include <net/ethernet.h>
 #endif
+
+#ifdef HAVE_PCAP_H
+#include <pcap.h>
+#endif
+
 #ifdef HAVE_IFADDRS_H
 #include <ifaddrs.h>
 #endif
@@ -93,10 +96,10 @@ void err_ret(const char *, ...);
 void err_sys(const char *, ...);
 
 /* Common unix function */
-int xioctl(int, unsigned long, void *);
-int xsocket(int, int, int);
-void *xmalloc(size_t);
-void *xcalloc(size_t, size_t);
+int Ioctl(int, unsigned long, void *);
+int Socket(int, int, int);
+void *Malloc(size_t);
+void *Calloc(size_t, size_t);
 
 /*
  * Get_ifi_info

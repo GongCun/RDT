@@ -19,13 +19,13 @@ OBJS  = get_addr.o get_dev.o get_mtu.o make_pkt.o to_net.o \
 all: ${PROGS}
 
 rdt: rdt.o ${OBJS} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $^
+	${CC} ${CFLAGS} -o $@ $(filter %.o,$^) $(LIBS)
 
 t_send: t_send.o ${OBJS} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $^
+	${CC} ${CFLAGS} -o $@ $(filter %.o,$^) $(LIBS)
 
 t_recv: t_recv.o ${OBJS} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $^
+	${CC} ${CFLAGS} -o $@ $(filter %.o,$^) $(LIBS)
 
 ${OBJS}: rdt.h
 
@@ -33,4 +33,5 @@ ${LIBTCPI}:
 	cd $(ROOT)/lib && $(MAKE)
 
 clean:
+	cd $(ROOT)/lib && $(MAKE) clean
 	rm -rf ${PROGS} ${CLEANFILES}
