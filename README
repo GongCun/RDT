@@ -1,0 +1,1161 @@
+本文根據Computer Networking A Top-Down Approach (Fourth Edition),
+Computer Networks (Fourth Edition)擴展和實現。
+
+        可靠傳輸協議 -- 設計與實現
+
+目錄
+
+1  可靠數據傳輸概述
+2  可靠數據傳輸協議的要素
+   2.1  編址
+   2.2  建立連接
+   2.3  釋放連接
+   2.4  可靠傳輸
+   2.5  總結
+3  流水線可靠數據傳輸協議
+   3.1  回退N步
+   3.2  選擇重傳
+4  安裝及函數接口說明
+   4.1  安裝
+   4.2  函數接口
+5  函數及數據結構定義說明
+   5.1  停等傳輸
+   5.2  回退N步
+   5.3  選擇重傳
+______________________________________________________________________________
+
+1  可靠數據傳輸概述
+
+    本文所提及的可靠數據傳輸協議，對應于TCP/IP模型的運輸層：
+
+             +----------+
+             | FTP, ... |           Application
+             +----------+
+             | TCP, UDP |           Transport
+             +----------+
+             |    IP    |           Network
+             +----------+
+             |    ARP   |           Link
+             +----------+
+
+         Figure 1a. TCP/IP Layer
+
+    可靠數據數據傳輸不僅可以在運輸層實現，也可以在鏈路層及應用層實現,
+    目的是為上層實體提供一種抽象：
+
+        數據可以提供通過一條可靠的信道進行傳輸，有了可靠信道，就不會有
+        傳輸數據比特受到損壞（由0變為1，或者相反）或丟失，而且所有數據
+        都是按照其發送順序進行傳送。
+
+    事實上，TCP是在不可靠的端到端網絡層協議（IP）之上實現的可靠數據傳
+    輸協議。至於為什麼IP和X.25或SNA相比，提供的是不可靠、無連接的數據
+    報傳送服務，卻比後者取得了更大的成功，請參考David D. Clark的著名論
+    文The Design Philosophy of the DARPA Internet Protocols。
+
+    為了便於學習，我們總是將較低層視為不可靠的點對點信道。如何實現一個
+    可靠傳輸協議，最方便的方式是在不可靠傳輸協議UDP上實現一個應用層程
+    序，本文使用一種與眾不同的方式，通過分組捕獲函數庫libpcap過濾鏈路
+    層中的IP包，通過原始套接字（raw socket）向鏈路層寫入IP包，來實現一
+    個真正運行在傳輸層的可靠傳輸協議，并稱其為RDT（Reliable Data
+    Transfer）協議。
+
+                     Pass user info by
+       +---------+   UX Domain Socket          +-------+
+       | User    |---------------------------> |RDT    |
+       | Process |                             |Process|
+       +---------+                             +-------+
+           | ^                                     /\
+           | |                              SIGIO /  \
+           | |                                   /    \
+           | |                                  v      v
+           | |                         +--------+      +--------+
+           | |                         |sig_io()|     /|Packet  |
+           | |                         |--------|    / |Capture |
+           | |                              |       /  +--------+
+           | |               Pass conn info |      /         ^
+           | |               by FIFO        |     / Pass pkt | Capture
+           | |                              v    v  by FIFO  | pkt
+           | | Recv pkt from FIFO      +--------+            |
+           | +------------------------ |FIFOs   |      +--------+
+           +-------------------------> |RawSock |----->|external|
+               Send pkt by Raw Sock    +--------+ Send +--------+
+                                                  pkt
+
+                     Figure 1b. RDT - Data Transfer Path
+
+
+2  構造可靠數據傳輸的要素
+
+    2.1 編址
+
+        在TCP中，一個唯一的連接由以下四元組組成：
+
+            <LocalIP, LocalPort, RemoteIP, RemotePort>
+
+        TCP服務器在一個眾所周知的端口上為多個遠程用戶提供服務，它同時
+        監聽一組端口，以等待外來的連接請求。每個服務的潛在用戶總是從一
+        個CONNECT請求開始，在CONNECT請求中指定了這些用戶想要的傳輸服務
+        訪問點（ServerIP:ServerPort），如果遠程用戶沒有指定端口，服務
+        器會為其分配一個隨機的端口和一個服務進程。參考TCP的編址，我們
+        在RDT中使用CONNECTION ID來代替PORT，類似的四元組：
+
+            <LocalIP, LocalCID, RemoteIP, RemoteCID>
+
+        由於RDT是一個實驗性質的協議，只提供4個並發的連接，因此CID =
+        [0,3]。
+
+     2.2  建立連接
+
+        建立連接聽起來很容易，但是卻出奇的瑣碎。初看起來，建立連接只
+        要傳輸實體給目標端發送一個CONNECTION REQUEST，然後等待
+        CONNECTION ACCEPTED應答就足夠了（這就是電話建立連接的方式）,
+        但實際上當網絡可能丟失或者重複分組的時候，問題就會發生，這些
+        行為導致極為嚴重的複雜性。建立可靠的數據連接需要具備以下要素：
+
+          o  為每一個連接分配一個連接標識符，使得能夠區分是否是重複
+             分組。
+
+          o  由於傳輸實體不能無限期地維護一定數量的歷史信息，並且，
+             如果一台機器崩潰了，由於內存全部丟失，它就不可能知道哪
+             些連接標識符已經被用過了。
+
+             因此，我們需要一種機制，不允許分組在子網中可以生存無
+             限長的時間，這種機制利用下面一種（或多種）技術實現：
+
+               (a)  在IP層，每個分組中都放置了一個跳數計數器（TTL），
+                    每次分組被轉發的時候跳數計數器減一，網絡協議簡單地
+                    丟棄那些跳數計數器為0的分組。
+
+               (b)  在TCP層，定義了最大分組壽命（Maximum Segment
+                    Lifetime），用於表示一個TCP分組可以在網絡中生存的
+                    最大時間，而TCP關閉之後需要等待迷途分組的消失：
+
+                        TIME_WAIT = 2MSL
+
+               (c) 在TCP層，由於每個分組使用一個32bit無符號整數的序號
+                   來進行標識，當傳輸到2^32字節后序號會重用。雖然數據
+                   包的最大生存時間（MSL）阻止了數據包的重複出現，但是
+                   在高速網絡中，仍然有可能在MSL時間內出現序號迴繞。比
+                   如一個千兆比網絡（1000 Mb/s），序號將在：
+
+                       2^32 * 8 / (1000 * 2^20) = 32 seconds
+
+                   之後發生迴繞，假如MSL為120秒，那麼就有可能有相同序
+                   號的報文段在傳輸過程中出現，此時需要時間戳選項對每
+                   個將要發送的窗口加1，如果報文重複出現，但是比最近有
+                   效的時間戳小，那麼報文將被丟棄。
+
+          o  如果使用兩路握手，當主動連接的一方發送CONNECTION REQUEST，
+             而接收方回送CONEECTION ACCEPTED時，如果發送方的CONNECTION
+             REQUEST已經丟失（發送方重傳超時并放棄），但是一個延遲的重
+             複CONNECTION REQUEST突然出現在接收方時，雙方將會建立一個
+             不正確的連接。為了解決這個問題，TCP使用三路握手建立連接。
+
+
+        對於使用停等（stop-and-wait）協議的RDTv1.0，序列號只需要0或者1，
+        為了簡化連接的過程，採用了CONNECTION REQUEST/ACCEPT的兩路握手。
+
+
+    2.3  釋放連接
+
+        雖然理論上釋放連接要比建立連接容易得多，但是依然有許多複雜之處。
+        終止連接有兩種方式：非對稱釋放和對稱釋放。非對稱釋放連接是電話
+        系統的工作方式：當一方掛機的時候，連接就中斷了。對稱釋放連接的
+        方式是把連接看成兩個獨立的單向連接，並要求釋放每一個單向連接。
+
+        非對稱釋放方法較為粗暴，可能會導致數據丟失。使用對稱釋放方式，
+        每個方向被單獨釋放，兩個方向互不影響。在這種方法中，即使當主機
+        發送了DICONNECT數據包之後，仍然可以接收數據，這也是TCP socket
+        中shutdown(2)函數的由來：允許半關閉一個全雙工連接。但是對稱釋
+        放的方式並不總是可以正確地工作，請參考兩軍問題（two-army
+        problem）。
+
+        RDP參考了TCP釋放連接的過程，採用了對稱關閉來釋放連接。
+
+    2.4  可靠傳輸
+
+        對應Computer Networking A Top-Down Approach (Fourth Edition)的
+        指引， 我們通過一系列模型來研究如何實現可靠傳輸。
+
+        (1)  完全可靠信道上的可靠數據傳輸：rdt1.0
+
+
+            --          ,-------.
+              \--      /wait for \   -----  rdt_send
+                 \--> ( call from )       ) _____________________
+                       \above    /  <-----  pkt = make_pkt(data)
+                        `-------'           to_net(pkt)
+
+                            (a) rdt1.0: sending side
+
+
+            --          ,-------.
+              \--      /wait for \   -----  rdt_recv
+                 \--> ( call from )       ) _____________________
+                       \below    /  <-----  extract(pkt, data)
+                        `-------'           deliver_data(data)
+
+                            (b) rdt1.0: receiving side
+
+           Figure 2a. rdt 1.0 - A protocol for a completely Reliable
+           channel
+
+            FSM描述圖中的箭頭指示了協議從一個狀態變遷到另一個狀態，引起變
+            遷的事件顯示在橫線上方，事件發生所採取的動作顯示在橫線下方。
+            在完全可靠的信道之下，接收方不會提供任何反饋信息給對方，因為不
+            會發生任何差錯，同時，假設接收方接收速率和發送方發送速率一樣快，
+            因此，接收方沒有必要請求發送方放慢發送速度。
+
+        (2)  具有比特差錯信道上的可靠數據傳輸：rdt2.0
+
+            這種情況下，需要“肯定確認”與“否定確認”控制報文，使得接收方
+            可以讓發送方知道哪些內容被正確接收，哪些內容接收有誤需要重
+            傳。基於這種重傳機制的可靠數據傳輸協議稱為自動重傳請求
+            （Automatic Repeat reQuest, ARQ）協議。一般來說，ARQ中還需
+            要另外三種協議來處理存在的比特差錯：
+
+              o 差錯檢測。 使用檢驗和字段使得接收方檢測到是否出現了比
+                特差錯。RDT採用和TCP相同的校檢和算法（參考RFC 1071），
+                原理是發送方首先將檢驗和字段置為0，然後對數據包中每
+                16bit（2bytes）進行1補數（One's complement）求和，結果
+                存放在校檢和字段中。接收方同樣對數據包進行1補數求和，
+                如果傳輸過程中沒有差錯，那麼1補數的計算結果就是全1，
+                轉換成2補數（也就是補碼）就是0。
+
+              o 接收方反饋。 因為發送方和接收方通常在不同端系統上執行，
+                可能相關甚遠，發送方要要了解接收方情況（即分組是否被正
+                確接收）的唯一途徑就是讓接收方提供明確的反饋信息給發送
+                方。肯定確認（ACK）和否定確認（NAK）就是這種反饋的例子。
+                類似地，我們的rdt2.0協議將從接收方向發送方回送ACK和NAK
+                分組。理論上，這些分組只需要一個比特，如用0表示NAK，用
+                1表示ACK。
+
+              o 重傳。 接收方收到有差錯的分組時，發送方將重傳該分組。
+
+              Figure 2b 給出表示rdt2.0的FSM，該數據傳輸協議採用了差錯
+              檢測、肯定確認與否定確認。
+
+
+                           rdt_send(data)
+                         ____________________________________
+                           sndpkt = make_pkt(data, checksum)
+                           to_net(sndpkt)
+              \
+               \-> ,------.   ,------.     ,------.       rdt_recv(rcvpkt) &&
+                  /  wait  \ /        \-> /  wait  \      isNAK(rcvpkt)
+                 | for call |            | for ACK  | --  __________________
+                 |   from   |            | or  NAK  |   )
+                  \  above /<-\         / \        / <--  to_net(sndpkt)
+                   `------'    `-------'   `------'
+
+                            rdt_recv(rcpkt) && isACK(rcvpkt)
+                           _________________________________
+                                           ^
+
+                               (a) rdt2.0: sending side
+
+
+                                  rdt_recv(rcvpkt) && currupt(rcvpkt)
+                        ,-.       ____________________________________
+                        | |       sndpkt = make_pkt(NAK)
+                        | v       to_net(sndpkt)
+                      ,------.
+                     /  wait  \
+                    | for call |
+                    |   from   |
+                     \  below /
+                      `------'
+                        | ^       rdt_recv(rcvpkt) && nocorrupt(rcvpkt)
+                        | |       ____________________________________
+                        `-'       extract(rcvpkt, data)
+                                  deliver_data(data)
+                                  sndpkt = make_pkt(ACK)
+                                  to_net(sndpkt)
+
+                               (b) rdt2.0: receiving side
+
+                Figure 2b. rdt2.0 - A protocol for a channel with bit errors
+
+            在Figure 2b-a中，當發送方在wait-for-ACK-NAK狀態時，它不能從上層獲
+            得更多的數據協議；這就是說，rdt_send()事件不可能發 生，僅當接收到
+            ACK并離開該狀態時，接收方才能繼續獲取數據。因此发送方将不会发送新
+            的数据，直到发送方确信接收方已正确接收当前分组为止。
+
+            rdt2.0看上去可以工作，但有一個致命的問題是ACK或者NAK也有可能是受損
+            的。對於發送者來說，如果ACK或NAK是受損的，那麼無法區分接受者是否正
+            確地收到了所發送的包。這樣就出現以下三種可能：
+
+              (a) 由於發送者不知道接收者究竟回覆的是ACK還是NAK，因此類似于打電
+                  話，它向接收者發送"What did you say?"，并期待接收者重新回覆
+                  一次，但是如果"What did you say?"這句話也corrupt了呢？如果接
+                  收方收到了含義不清的"What did you say?"，很可能再給發送方回
+                  復一句“What did you say?"，然後就進入了一條重重困難之路。
+
+              (b) 第二種可能，由於信道有可能受損，但不會丟失，可以尋找一種算法，
+                  增加足夠的檢驗和比特，使得發送方不僅可以檢測比特差錯，還可以
+                  恢復比特差錯。這個方案雖然可以直接解決問題，但是難度亦不小。
+
+              (c) 第三種可能是，當發送方收到含糊不清的ACK或NAK分組時，只需重發
+                  當前數據分組即可。然而引入冗餘分組的困難在於接收方不知道它上
+                  次所發送的ACK或NAK是否被發送方正確地收到，因此它無法事先知道
+                  接收到的分組是新的還是一次重傳！
+
+            解決這個新問題有一個簡單方法（幾乎所有現存的數據協議，包括TCP，都
+            採用了這種方法），在數據分組中添加一個新字段，讓發送方對其數據分組
+            編號，即將發送的數據分組的序號（sequence number）放在該字段。於是，
+            接收方只需要檢查序號即可確定收到的分組是否是一次重傳。對於停等協議，
+            1bit序號就足夠了，因為它可以讓接收方知道發送方在重傳前一個發送分組
+            （接收到的分組序號與最近收到的分組序號相同），還是一個新的分組（序
+            號變化了，用mod 2運算移動）。因為我們假定信道不丟失分組，因此ACK和
+            NAK並不需要指明它們要確認的分組序號，總是為響應其最近發送的數據分
+            組而生成的。下圖給出對rdt2.1的FSM描述，發送方和接收方FSM的狀態數都
+            是以前的兩倍。這是因為協議狀態必須反映出目前（由發送方）正發送的分
+            組或（在接收方）接收的分組序號是0還是1。注意發送或接收0號或1號分組
+            的狀態是對稱的。
+
+
+                          rdt_send(data)
+                          _______________________________________
+                          sndpkt = make_pkt(0，data, checksum)
+                          to_net(sndpkt)
+                                                           rdt_recv(rcvpkt) &&
+                                                           (isNAK(rcvpkt) ||
+                 \                                         corrupt(rcvpkt))
+                  \-> ,------.   ,------.     ,------.     __________________
+                     /  wait  \ /        \-> /  wait  \    to_net(sndpkt)
+                    |for call0 |            | for ACK0 | --
+                    |   from   |            | or  NAK0 |   )
+                     \  above /              \        / <--
+                      `------'                `------'
+    rdt_recv(rcvpkt) &&  ^                          \      rdt_recv(rcvpkt) &&
+    notcorrupt(rcvpkt)  /                            |     notcorrupt(rcvpkt)
+    && isACK(rcvpkt)    |                            |     && isACK(rcvpkt)
+    __________________  |                            |     __________________
+             ^          |                           /              ^
+                         \                          v
+                      ,------.                ,------.
+                     /  wait  \              /  wait  \
+                 -- | for ACK1 |            |for call1 |
+                (   | or  NAK1 |            |   from   |
+                 --> \        /<-\         / \  above  /
+                      `------'    `-------'   `------'
+
+            rdt_recv(rcvpkt) &&
+            (isNAK（rcvpkt) ||                  rdt_send(data)
+            corrupt(rcvpkt))          _______________________________________
+            ___________________         sndpkt = make_pkt(1，data, checksum)
+            to_net(sndpkt)              to_net(sndpkt)
+
+                            (a) rdt2.1 sender
+
+       =~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
+
+                              rdt_rev(rcvpkt)&& notcorrupt(rcvpkt)
+                              && has_seq0(rcvpkt)
+                              ____________________________________
+                              extract(rcvpkt,data)
+                              deliver_data(data)
+                              sndpkt=make_pkt(ACK,checksum)
+                              to_new(sndpkt)
+
+                   \
+ rdt_recv(rcvpkt)   \-> ,------.   ,----.     ,------.       rdt_recv(rcvpkt)
+ && corrupt(rcvpkt)    /  wait  \ /      \-> /  wait  \    && corrupt(rcvpkt)
+ _________________  --|   for 0  |          |   for 1  | --  _________________
+ sndpkt = make_pkt (  |   from   |          |   from   |   ) sndpkt = make_pkt
+ (NAK, chksum)      -->\  below /<-\       / \  below / <--  (NAK, chksum)
+ to_net(sndpkt)        /`------'    `-----'   `------'\      to_net(sndpkt)
+                      / ^                             ^ \
+                     / /                               \ \
+                    `-'                                 `-'
+ rdt_recv(rcvpkt) && notcorrupt                 rdt_recv(rcvpkt) && notcorrupt
+ (rcvpkt) && has_seq1(rcvpkt)                   (rcvpkt) && has_seq0(rcvpkt)
+ ______________________________                 ______________________________
+ sndpkt = make_pkt(ACK, chksum)                 sndpkt = make_pkt(ACK, chksum)
+ to_net(sndpkt)                                 to_net(sndpkt)
+
+                              rdt_rev(rcvpkt)&& notcorrupt(rcvpkt)
+                              && has_seq1(rcvpkt)
+                              ____________________________________
+                              extract(rcvpkt,data)
+                              deliver_data(data)
+                              sndpkt=make_pkt(ACK,checksum)
+                              to_new(sndpkt)
+
+                            (b) rdt2.1 Receiver
+
+              Figure 2b. rdt2.1 - A protocol for a channel with bit errors
+
+            協議rdt2.1使用了從接收方到發送方的肯定確認和否定確認。當接收到失序
+            的分組時，接收方對所接收的分組發送一個肯定確認（如果不發送肯定確認，
+            則發送方就會停留在wait-for-ACK-or-NAK狀態，而不斷重發失序的包，而
+            接收方永遠收不到期望的包，就會形成死鎖）。如果收到受損的分組，接收
+            方將收到一個否定確認。
+
+            如果不發送NAK，而是發送一個對上次正確接收的分組的ACK，我們也能實現
+            與NAK一樣的效果。TCP也是通過發送上次的ACK來作為NAK的。rdt2.2是在具
+            有比特差錯信道上實現的一個無NAK的可靠數據傳輸協議，如圖 Figure 2c
+            所示。rdt2.1和rdt2.2之間的細微變化在於，接收方必須包括由一個ACK報
+            文確認的分組序號（由make_pkt()的參數ACK=0或ACK=1來實現）,發送方必
+            須檢查收到的ACK報文中所確認的分組序號。
+
+
+                          rdt_send(data)
+                          _______________________________________
+                          sndpkt = make_pkt(0，data, checksum)
+                          to_net(sndpkt)
+                                                          rdt_recv(rcvpkt) &&
+                                                          (isACK(rcvpkt, 1) ||
+                 \                                        corrupt(rcvpkt))
+                  \-> ,------.   ,------.     ,------.    __________________
+                     /  wait  \ /        \-> /  wait  \   to_net(sndpkt)
+                    |for call0 |            | for ACK0 | --
+                    |   from   |            | or  NAK0 |   )
+                     \  above /              \        / <--
+                      `------'                `------'
+   rdt_recv(rcvpkt) &&   ^                          \     rdt_recv(rcvpkt) &&
+   notcorrupt(rcvpkt)   /                            |    notcorrupt(rcvpkt)
+   && isACK(rcvpkt, 1)  |                            |    && isACK(rcvpkt, 0)
+   __________________   |                            |    __________________
+             ^          |                           /              ^
+                         \                          v
+                      ,------.                ,------.
+                     /  wait  \              /  wait  \
+                 -- | for ACK1 |            |for call1 |
+                (   | or  NAK1 |            |   from   |
+                 --> \        /<-\         / \  above  /
+                      `------'    `-------'   `------'
+
+           rdt_recv(rcvpkt) &&
+           (isACK（rcvpkt, 0) ||                  rdt_send(data)
+           corrupt(rcvpkt))          _______________________________________
+           ___________________         sndpkt = make_pkt(1，data, checksum)
+           to_net(sndpkt)              to_net(sndpkt)
+
+                            (a) rdt2.2 sender
+
+
+       =~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
+
+                              rdt_rev(rcvpkt)&& notcorrupt(rcvpkt)
+                              && has_seq0(rcvpkt)
+                              ____________________________________
+                              extract(rcvpkt,data)
+                              deliver_data(data)
+                              sndpkt=make_pkt(ACK,0, checksum)
+                              to_new(sndpkt)
+
+                   \
+                    \-> ,------.   ,----.     ,------.
+                       /  wait  \ /      \-> /  wait  \
+                      |   for 0  |          |   for 1  |
+                      |   from   |          |   from   |
+                       \  below /<-\       / \  below /
+                       /`------'    `-----'   `------'\
+                      / ^                             ^ \
+                     / /                               \ \
+                    `-'                                 `-'
+ rdt_recv(rcvpkt) &&                         rdt_recv(rcvpkt) &&
+ (corrupt(rcvpkt) ||                         (corrupt(rcvpkt) ||
+ has_seq1(rcvpkt))                            has_seq0(rcvpkt))
+ ______________________________               ______________________________
+ sndpkt = make_pkt(ACK, 1, chksum)            sndpkt = make_pkt(ACK, 0, chksum)
+ to_net(sndpkt)                               to_net(sndpkt)
+
+                              rdt_rev(rcvpkt)&& notcorrupt(rcvpkt)
+                              && has_seq1(rcvpkt)
+                              ____________________________________
+                              extract(rcvpkt,data)
+                              deliver_data(data)
+                              sndpkt=make_pkt(ACK,1, checksum)
+                              to_new(sndpkt)
+
+                            (b) rdt2.1 Receiver
+
+              Figure 2c. rdt2.2 - A protocol for a channel with bit errors
+
+        (3)  具有比特差錯的丟包信道上的可靠數據傳輸：rdt3.0
+
+            現在假定除了比特受損外，低層信道還會丟包。rdt3.0現在必須解決另外兩
+            個廣泛關注的問題：怎樣檢測丟包以及發生丟包后該做些什麼。利用rdt2.2
+            中的技術，如校檢和、序號、ACK分組和重傳等，可以解決后一個問題。為
+            解決如何檢測丟包，還需增加一種新的協議機制。
+
+            這裡，我們讓發送方負責檢測和恢復丟包。假定發送方傳輸一個數據分組，
+            或者該分組或者接收方對該分組的ACK發生了丟失，在這兩種情況下，發送
+            方都收不到應當到來的接收方的響應。如果發送方願意等待足夠長的時間以
+            便確定分組已經丟失，則只需重傳該數據分組即可。注意到如果一個分組經
+            歷了一個特別大的時延，發送方可能會重傳該分組，即使該數據分組或ACK
+            都沒有丟失。這就在發送方到接收方的信道中引入了冗餘數據分組
+            （duplication data packet）的可能性。幸運的是，rdt2.2協議已經有足
+            夠的功能（即序號）來處理冗餘分組情況。
+
+
+                 rdt_send(data)                           rdt_recv(rcvpkt) &&
+                 __________________________________     (corrupt(rcvpkt) ||
+                 sndpkt=make_pkt(0, data, checksum)       isACK(rcvpky, 1))
+                 to_net(sndpkt)                           ___________________
+                 start_timer                            _          ^
+                 \                                     / /
+                  \-> ,------.   ,------.     ,------./ /
+ rdt_recv(rcvpkt)    /  wait  \ /        \-> /  wait  \<     timeout
+ ______________  -- |for call0 |            | for ACK0 | --  _______________
+        ^       (   |   from   |            | or  NAK0 |   ) to_net(sndpkt)
+                 --> \  above /              \        / <--  start_timer
+                      `------'                `------'
+                         ^                          \
+   rdt_recv(rcvpkt) &&  /                            |   rdt_recv(rcvpkt) &&
+   notcorrupt(rcvpkt)   |                            |   notcorrupt(rcvpkt)
+   && isACK(rcvpkt, 1)  |                            |   && isACK(rcvpkt, 0)
+   __________________   |                           /    __________________
+   stop_timer            \                          v    stop_timer
+                      ,------.                ,------.
+timeout              /  wait  \              /  wait  \
+_______________  -- | for ACK1 |            |for call1 | --
+to_net(sndpkt)  (   | or  NAK1 |            |   from   |   ) rdt_recv(rcvpkt)
+start_timer      --> \        /<-\         / \  above  /<--  ________________
+                    ->`------'    `-------'   `------'               ^
+                   / /
+                  / /
+                  -'  	    rdt_send(data)
+  rdt_recv(rcvpkt) &&       __________________________________
+  (corrupt(rcvpkt) ||       sndpkt=make_pkt(1, data, checksum)
+  isACK(rcvpkt, 0))         to_net(sndpkt)
+  __________________        start_timer
+            ^
+
+		           (a) rdt3.0 sender
+
+			   (b) rdt3.0 receiver (same as rdt2.2)
+
+                           Figure 2d. rdt3.0
+
+            現在我們來討論一下，在rdt3.0中，超時重傳的等待時間應該如何設置。可
+            靠傳輸協議的超時與重傳最重要的部分就是對一個給定連接的往返時間
+            （RTT）的測量。由於路由器和網絡流量均會變化，因此可靠傳輸協議應該
+            跟蹤這些變化并相應地改變其超時時間。在為rdt協議設置定時器時，參考
+            了TCP重傳定時器的算法：根據RTT測量值（measureRTT），以及srtt（被平
+            滑的RTT）和rttvar（被平滑的均值偏差），來估算重傳超時RTO：
+
+	        delta = measureRTT - srtt
+
+		srtt <- srtt + g x delta
+
+		rttvar <- rttvar + h(|delta| - rttvar)
+
+		RTO = srtt + 4 x rttvar
+
+            其中，g = 1/8，h = 1/4；假設初始RTO = 3 seconds，則初始srtt = 0,
+            rttvar = 3/4。注意，重傳之後收到的Ack，由於不能確定對方回應的是對應
+            哪一次傳輸，所以并不使用以上公式，而是重用RTO，直到收到並非重傳的
+            Ack之後再更新RTO（Karn算法）。
+
+
+    2.5  總結
+
+        綜上所述，我們給出一個完整的可靠傳輸協議的有限狀態機，其中連接的建立通
+        過兩路握手；連接的斷開通過傳輸方和接收方兩邊各自對稱釋放，但沒有經過中
+        間狀態；連接建立之後的數據傳輸發送方遵從rdt3.0 sender，接收方遵從
+        rdt2.2 receiver，這樣就完成了一個停等（stop-and-wait）可靠傳輸協議。
+
+
+				    +--------+
+			+---------- | CLOSED | <--------+
+			| +-------> +--------+          |
+	 Active_open    | |           | Passive_open    |
+	 Send <Request> | | timeout   | Send <Nothing>  |
+			v |           v                 | Send <FIN>
+		   +---------+      +--------+          | Recv <ACK>
+		   | WAITING |      | LISTEN |          | or
+		   +---------+      +--------+          | Send <DATA>
+			|             | Recv <Request>  | Recv timeout
+	 Send <Nothing> |             | Send <Accept>   |
+	 Recv <Accept>  |             v                 |
+			|         +-------------+       |
+			+-------> | ESTABLISHED |-------+
+				  +-------------+
+				     |  ^
+				     |  | Send <DATA>
+			 	     |  | Recv <ACK>
+				     `--' (rdt3.0 FSM)
+
+
+                                 Figure 2e. RDT FSM
+
+
+3  流水線可靠數據傳輸協議
+
+    雖然停等協議也有廣泛的應用，比如TFTP用於引導無盤系統。但對於停等協議來說，
+    性能是最大的問題。考慮兩台相隔較遠的主機之間的光速往返傳播時延（RTT）大約
+    為30ms。假定彼此通過一條傳輸速率為R = 1 Gbps (10^9 bps)的信道相連。包括
+    首部字段和數據的分組長度L = 1000 bytes (8000 bit)，實際發送一個分組到1
+    Gbps鏈路中所需的時間是：
+
+        t = L / R = 8000 bit / 10^9 bps = 8 us
+
+    該分組經過15ms到達對方，該分組的最後1bit在時刻t = RTT/2 + L/R = 15.008ms時
+    到達接收方。為了簡化起見，假設ACK分組很小，可以忽略其發送時間，接收方一旦
+    收到數據分組的最後1bit后立即發送ACK，ACK在時刻30.008ms時到達發送方。此時，
+    發送方可以發送下一個報文。因此在30.008ms內，發送方的發送只用了0.008ms。這
+    樣利用率只有：
+
+        U = (L / R) / (RTT + L / R) = 0.008 / 30.008 = 0.00027
+
+    也就是說，發送方只有萬分之2.7的時間是忙得。發送方在30.008ms內只能發送1000
+    字節，有效的吞吐量僅為267 kbps (即使有1 Gbps可用)。
+
+    解決這種特殊的性能問題的一個簡單方法是：不適用停等方式運行，允許發送方發送
+    多個分組而無需等待確認，如果發送方可以在等待確認之前發送3個分組，其利用率
+    也將是原來的3倍。因為從發送方向接收方傳輸的眾多分組可以看成是填充到一條流
+    水線中，故這種技術被稱為流水線(pipelining)。流水線技術可對可靠數據傳輸協議
+    帶來如下影響：
+
+      o 必須增加序號範圍，因為每個傳輸的分組（不計算重傳的）必須有一個唯一的序
+        號，而且也許有多個在傳輸中的未確認的分組。
+
+      o 協議的發送方和接收方也許必須緩存多個分組。發送方最低限度應當能緩存那些
+        已發送但沒有確認的分組，接收方或許也需要緩存那些已正確接收的分組。
+
+      o 所需序號範圍和對緩衝的要求取決於數據傳輸協議處理丟失、損壞及過度延時分
+        組的方式。解決流水線的差錯恢復有兩種基本方法：回退N步（Go-Back-N）和選
+        擇重傳（selective repeat）。
+
+
+    3.1  回退N步
+
+        在回退N步（Go-Back-N, GBN）協議中，允許發送方發送多個分組而不需等待確
+        認，但它也受限于在流水線中未確認的分組數不能超過某個最大允許數N。
+
+       	       	     base     	  nextseqnum
+	       	       |       	       |
+            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	    |A|A|A|A|A|S|S|S|S|S|S|S|S|U|U|U|U|U|U|N|N|N|N|N|
+	    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       	     	      |<---  Window Size N    --->|
+
+            A = Already ACK'd         U = Usable, not yes sent
+	    S = Sent, not yet ACK'd   N = Not usable
+
+           Figure 3a. Sender's view of sequence numbers in GBN
+
+        上圖顯示了發送方看到的GBN協議的序號範圍。如果我們將base定義為最早的未
+        確認分組的序號，將nextseqnum定義為最小的未使用序號（即下一個待發送分組
+        的序號），則可將序號範圍劃分成4部分：
+
+            a) [0, base-1]內的序號對應於已經發送并確認過的分組。
+
+	    b) [base, nextseqnum-1]內的序號對應已經發送但未被確認的分組。
+
+	    c) [nextseqnum, base+N-1]內的序號可用于繼續發送來自上層的數據。
+
+	    d) [base+N, ...)的序號不能使用，必須通過接收方的ACK才能推動窗口。
+
+        如Figure 3a所示，那些已被發送但還未被確認的分組序號範圍可以被看成是一
+	個在序號範圍內長度為N的窗口。隨著協議的運行，該窗口在序號空間內向前滑
+	動。因此N常被稱為窗口長度（window size），GBN協議常被稱為滑動窗口協議
+	（sliding-window protocol）。需要限制滑動窗口的大小N的重要原因是擁塞控
+	制的必要。
+
+	在實際中，一個分組的序號承載在分組首部的一個固定長度的字段中，如果分組
+	序號字段的比特數是k，則該序號範圍是[0, 2^k-1]。在一個有限的序號範圍內，
+	所有涉及序號的運算必須使用模2^k運算（即序號空間是一個長度為2^k的環，
+	2^k-1緊接序號0）。TCP的序號字段為32bit，RDT也為32bit。
+
+                      rdt_send(data)
+                      ----------------------------------------------------------
+                      if (nextseqnum < base + N) {
+                          sndpkt[nextseqnum] = make_pkt(nexseqnum, data, chksum)
+        \                 to_net(sndpkt[nextseqnum])
+          \               if (base == nexseqnum)
+            \                 start_timer
+              \           nextseqnum++
+         ^      \     } else
+     ----------   \       refuse_data(data)
+     base = 1       \
+     nexseqnum = 1    \          ,----.
+                        \        |    v
+                          \     ,------.       timeout
+                            \->/        \      --------------------
+      rdt_recv(rcvpkt) &&   --|   Wait   |--   start_timer
+      corrupt(rcvpkt)      (  |          |  )  to_net(sndpkt[base])
+      -------------------   -> \        / <-   to_net(sndpkt[base+1])
+               ^                `------'       ...
+                                 |    ^        to_net(sndpkt[nextseqnum-1])
+                                 `----'
+
+                          rdt_recv(rcvpkt) && nocorrupt(rcvpkt)
+                          -------------------------------------
+                          base = getacknum(rcvpkt) + 1
+                          if (base == nextseqnum)
+                              stop_timer
+                          else
+                              start_timer
+
+
+		        Figure 3b. GBN sender
+
+
+			rdt_recv(rcvpkt)
+			  && notcorrupt(rcvpkt)
+			  && hasseqnum(rcppkt, expectedseqnum)
+			----------------------------------------------
+			extract(rcvpkt, data)
+			deliver_data(data)
+			sndpkt = make_pkt(expectedseqnum, ACK, chksum)
+			to_net(sndpkt)
+			expectedseqnum++
+
+				     ,----.
+				     |    v
+				    ,------.
+				   /        \
+	  ----------------------> |   Wait   |--   default
+		   ^              |          |  )  --------------------
+	  -------------------      \        / <-   to_net(sndpkt)
+	  expectedseqnum = 1        `------'
+	  sndpkt = make_pkt(0, ACK, chksum)
+
+
+
+		        Figure 3c. GBN sender
+
+
+        GBN發送方必須相應以下三種類型的事件:
+
+	    a) 上層的調用。當上層調用rdt_send()時，發送方首先檢查發送窗口是否
+	       已滿：即是否有N個已發送但未被確認的分組。如果窗口未滿，則發送分
+	       組，并更新相關變量。如果窗口已滿，發送方可以將數據返回給上層來
+	       隱式地通知上層窗口已滿；或者使用信號量或標誌，允許上層在僅當窗
+	       口不滿時才調用rdt_send()。在RDT中，上層是通過write()來調用
+	       rdt_send()的，通過返回EAGAIN來通知上層retry。
+
+            b) 收到ACK。在GBN協議中，對序號為n的分組採取累積確認（cumulative
+               acknowledgment），表面接收方已正確接收到序號n以前（包括n）的所
+               有分組。TCP中的累積確認是通過200ms的定時器來實現的（如果開啟
+               Nagle算法，交互數據流可能出現明顯的時延，因此Putty等交互終端默
+               認關閉Nagle算法）。在RDT中，為了減少複雜性（同步機制以及防止信
+               號的重複調用），單純通過計算時延（200ms）實現。
+
+            c) 超時事件。協議的名字“Go-Back-N”是根據出現丟失和過度時延分組時發
+               送方的行為而得出的。就像在停等協議中那樣，定時器將再次用於恢復
+               丟失的數據或確認分組。如果出現超時，發送方將重傳所有已發送但還
+               未確認的分組。 Figure 3b 中只使用了一個定時器，它可當作是最早的
+               已發送但未被確認的分組所使用的定時器。如果收到一個ACK，但仍有已
+               發送但未被確認的分組，則定時器被重新啟動。如果沒有已發送但未被
+               確認的分組，定時器被終止。
+
+        在GBN協議中，接收方的動作也很簡單。如果一个序號為n的分組被正確接收到，
+        並且按序（即上次交付給上層的數據是序號為n-1的分組），則接收方為分組n發
+        送一個ACK，并將該分組中的數據交付給上層。在所有其他情況下，接收方都丟
+        棄該分組，并為最近按序接收的分組重傳ACK。注意到因為一次交付給上層一個
+        分組，如果分組k已接收并交付，則所有比序號k小的分組也已經交付。因此，使
+        用累積確認是GBN的一個自然選擇。
+
+	在GBN中，接收方丟棄所有失序分組。儘管丟棄正確接收但是失序的分組顯得愚
+	蠢和浪費，但這樣做卻是有道理的。這是由於如果分組n丟失，那麼該分組及其
+	之後的分組將會由發送方重傳，因此接收方并不需要緩存失序分組，只需要簡單
+	地丟棄即可。當然，丟棄一個正確接收分組的缺點是隨後對該分組的重傳也許會
+	丟失或出錯，因此甚至需要更多的重傳。
+
+
+	       Sender                              Receiver
+
+             send pkt0   ---------------------->  recv pkt0, deliver
+	     					  send ACK0
+
+             send pkt1   ---------------------->  recv pkt1, deliver
+		      				  send ACK1
+
+             send pkt2   -------- X (loss) ---->
+
+             send pkt3   ---------------------->  recv pkt3, discard
+						  send ACK1
+
+             recv ACK0   <----------------------
+             (window slides)
+
+             send pkt4   ---------------------->  recv pkt4, discard
+			    			  send ACK1
+
+             recv ACK1   <----------------------
+             (window slides)
+
+	     send pkt5   ---------------------->  recv pkt5, discard
+			    			  send ACK1
+
+             pkt2 timeout
+
+             send pkt2   ---------------------->  recv pkt2, deliver
+						  send ACK2
+
+             send pkt3   ---------------------->  recv pkt3, deliver
+		      				  send ACK3
+
+             send pkt4   ---------------------->  recv pkt4, deliver
+						  send ACK4
+
+             send pkt5   ---------------------->  recv pkt5, deliver
+						  send ACK5
+
+                        Figure 3d. Go-Back-N operation
+
+        上圖顯示了窗口長度為4的GBN協議的運行情況。發送方發送分組0至3，然後在繼
+        續發送之前，必須等待直到一個或多個分組被確認。當接收到ACK時，窗口向前
+        滑動，發送方便可以發送新的分組。在接收方，由於分組2丟失，因此分組3、4
+        和5被發現是失序分組并被丟棄。
+
+    3.2 選擇重傳
+
+        GBN協議允許發送方用多個分組填充流水線，因此避免了停等協議中的信道利用
+	率問題，然而，GBN本身也存在著性能問題。尤其是當窗口長度和帶寬時延乘積
+	都很大，在流水線中有很多分組時更是如此。一個單個分組的差錯就可能引起
+	GBN重傳大量分組，許多分組根本沒必要重傳。隨著信道差錯率的增加，流水線
+	可能會被這些沒必要重傳的分組填滿。
+
+	顧名思義，選擇重傳（SR）協議通過讓發送方僅重傳那些丟失或受損的分組而避
+	免了不必要的重傳。SR協議再次用窗口長度N來限制流水線中未完成、未被確認
+	的分組數。然而，與GBN不同的是，發送方已經收到了對窗口中某些分組的ACK；
+	而接收方將確認一個正確接收的分組而不管其是否失序。失序的分組將被緩存直
+	到所有丟失分組（即序號更小的分組）都被收到，才可以將一批分組按序交付給
+	上層。
+
+	下面是SR發送方所需要採取的動作：
+
+  	  1. 從上層收到數據。當從上層收到數據后，SR發送方檢查下一個可用的序號，
+  	     如果序號在發送方的窗口內，則將數據打包發送；否則就像GBN一樣，要麼
+  	     將數據緩存，要麼將其返回給上層以便以後傳輸。
+
+	  2. 超時。定時器再次被用來防止丟失分組。然而，現在每個分組都必須擁有
+	     自己的邏輯定時器，因為超時后只能發送一個分組。雖然使用單個硬件定
+	     時器模擬多個邏輯定時器的操作是可能的，但是為了簡易起見，在RDT中仍
+	     然只使用了一個定時器，當超時發生時，重發所有超時的包。
+
+          3. 收到Ack。如果收到Ack，其該分組序號在窗口內，則SR發送方將那個被確
+             認的分組標記為已接收。如果該分組的序號等於send_base，則窗口基序號
+             向前移動到具有最小序號的未確認分組處。如果窗口移動了且有序號落在
+             窗口內的未發送分組，則發送這些分組。
+
+        而SR接收方則採取以下動作：
+
+	  1. 序號在[rcv_base, rcv_base+N-1]內的分組被正確接收。在此情況下，收
+	     到的分組落在接收方的窗口內，一個選擇Ack分組被回送給發送方。如果該
+	     分組是以前沒收到的分組，則被緩存。如果該分組的序號等於接收窗口的
+	     基序號（rcv_base），則該分組以及以前緩存的序號連續的分組（起始於
+	     rcv_base）交付給上層。然後，接收窗口按向上交付的分組的數量向前移
+	     動。
+
+	  2. 序號在[rcv_base-N, rcv_base-1]內的分組被正確接收。在此情況下，必
+	     須產生一個Ack，即使該分組是接收方以前已確認過的分組。
+
+          3. 其他情況。忽略該分組。
+
+	考慮和 Figure 3d 相同的情景，窗口長度為4的SR，發送方在發送分組2時丟失，
+	對於選擇重傳，將會發生以下情況：
+
+
+	       Sender                              Receiver
+
+             send pkt0   ---------------------->  recv pkt0, deliver
+	     					  send ACK0
+
+             send pkt1   ---------------------->  recv pkt1, deliver
+		      				  send ACK1
+
+             send pkt2   -------- X (loss) ---->
+
+             send pkt3   ---------------------->  recv pkt3, buffer
+						  send ACK3
+
+             recv ACK0   <----------------------
+             (window slides)
+
+             send pkt4   ---------------------->  recv pkt4, buffer
+			    			  send ACK4
+
+             recv ACK1   <----------------------
+             (window slides)
+
+	     send pkt5   ---------------------->  recv pkt5, buffer
+			    			  send ACK5
+
+             pkt2 timeout
+
+             send pkt2   ---------------------->  recv pkt2, pkt2, pkt3,
+						  pkt4, pkt5 delivered,
+						  send ACK2
+
+             recv ACK3   <----------------------
+             (noting sent)
+
+
+
+                    Figure 3e. Selective-Repeat operation
+
+        在選擇重傳中，如果窗口長度N大於序號空間的一半（對于32bit是2^16），當接
+        收方向前移動了它的窗口之後，新的有效序列號與老的範圍有重合。因此，接收
+        方將無法區分是重發的幀還是新的幀，所以在SR協議中，窗口長度必須不大於序
+        號空間的一半。
+	
+
+4  安裝函數接口說明
+
+    4.1  安裝
+
+        % autoheader -I./lib
+	% autoconf
+	% ./configure
+	% make
+	
+    4.2  函數接口
+
+        RDT目前只支持IPv4。
+
+    	API Syntax
+
+	    #include "rdt.h"
+
+	    int rdt_connect(struct in_addr dst, int scid, int dcid);
+	    int rdt_listen(struct in_addr src, int scid);
+	    ssize_t rdt_send(void *buf, size_t nbytes);
+	    ssize_t rdt_recv(void *buf, size_t nbytes);
+	    void rdt_pipe(int fd[2]);
+
+	Description
+
+	    RDT協議提供一個管理服務用於分組的遞交（類似於TCP/IP棧），啟動服務：
+
+	        ./rdt <Interface>
+
+	    其中Interface是用於傳輸的網絡接口，可以使用'netstat -in'來查找。
+
+	    RDT也為端到端的數據傳輸提供了API（類似於Socket接口）。
+
+	    rdt_connect()用於初始化一個連接，類似connect(2)，其中dst為遠端地址，
+	    scid為本地連接號（如果小於0，則自動分配），dcid為遠程連接號。
+
+	    rdt_listen()用於監聽連接到達，類似listen(2)，src為監聽地址，scid為
+	    監聽連接號。
+
+	    rdt_send()用於從緩衝區buf取出指定nbytes的字節數寫入網絡。
+
+	    rdt_recv()用於從網絡讀入nbytes的字節數到緩衝區buf。
+
+	    rdt_pipe()用於打開一對描述符，一個描述符（fd[0]）用於從網絡接收分組，
+	    另一個描述符（fd[1]）用於向網絡發送分組。
+
+	    對於單工通訊，可以于網絡的一端使用rdt_send()發送數據，而與另一端使
+	    用rdt_recv()接收數據；對於雙工通訊，可以通過rdt_pipe()同時打開接收
+	    端和發送端。請參考t_send.c和t_recv.c等sample程序。
+
+        Return Values
+
+	    rdt_connect(): 成功時返回0，否則返回-1； rdt_listen()：成功時返回0，
+	    否則返回-1； rdt_send()：成功時返回寫入網絡的字節數，否則返回<0；
+	    rdt_recv()：成功時返回從網絡讀入的字節數，如果連接關閉，返回0，否
+	    則返回<0。
+	    
+	
+5  函數及數據結構定義說明
+
+    5.1  停等傳輸
+
+                        Figure a1. The RDT protocol packet
+
+	     0                   1                   2                   3
+	     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+	    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	    |   SRC CID#    |    DST CID#   |   Seq(0/1)    |     Flags     |
+	    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	    |         Packet length         |            Checksum           |
+	    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	    |                             Data                              |
+	    |                             ...                               |
+
+
+
+
+                       Figure a2. Summary functions for 'rdt' daemon.
+
+                                ------
+                               ( main )
+                               /------\
+                       SIGIO  /        \ Capture Packets
+                             /          \
+                            /            \
+                           v              v
+                       --------           ----------
+                      ( sig_io )         ( from_net )
+                       --------           ----------
+                        /   \             calls:
+                       /     \            open_pcap()
+                      v       v           pcap_loop()
+              ,--------.     ,-------.    call_back() - Search the <IP, CID>
+             | krdt_   |    | krdt_  |         |	from conn[] list.
+             | connect |    | listen |         |
+              `------- '     `-------'         v
+              active         passive     ------------
+                                        ( pkt_arrive )
+                                         ------------
+					 Processing 4 types of state:
+					 CLOSED, WAITING, LISTEN, ESTABLISHED
+
+
+		       Figure a3. Array of struct conn
+
+			       +--------------+  -
+			       | sndfd, rcvfd |  ^
+			       | conn state   |  |
+			       | src address  |  struct
+			       | src conn-id  |  conn{}
+			       | dst address  |  |
+			       | dst conn-id  |  v
+			       +--------------+  -
+			       |              |
+			       |     ...      |
+			       |              |
+			       |              |
+			       |              |
+
+
+
+	               Figure a4. 'rdt_recv' function
+
+
+   			       read(rcvfd, pkt)	  <--+
+			      	      |		     |
+				      v		     |
+			       make_pkt(ACK, seq,    |
+			       checksum)	     | NO
+			       to_net(pkt)	     |
+				      |		     |
+				      v		     |
+			    	--------------	     |
+			       ( Expected SEQ )------+
+				--------------
+				      |  YES
+				      v
+				---------------	  YES 	make_pkt(FIN)
+			       ( Data Len is 0 )------> rexmt_pkt(pkt)
+			       	---------------
+				      | NO
+				      v
+			       	Copy data from internal
+				to user buffer
+
+
+		       Figure a5. 'rdt_send' function
+
+                               rexmt_pkt(DATA)
+				      |
+				      v
+			       make_pkt(address,   <----------+
+			       conn-id, SEQ, DATA)	      |
+			       to_net(rawfd, pkt)	      |
+				      |			      |
+				      v			      | re-tran
+			       read(sndfd, pkt)	       	      |
+				      |		 	      |
+				      v		 	      |
+			       	-------------  	YES	      |	NO
+			       / time out     \	    ---------------------
+			      (	 or ACK is     )-->( exceed the max times )
+			       \ not expected /	    ----------------------
+				-------------		      | YES
+				      |	NO     	       	      v
+				      v			    give up
+				   return
+
+
+                       Figure a6. 'rdt_pipe' function
+
+                                rdt_pipe()
+				     |
+				     | pipe(pfd)
+				     *
+				     |\-- fork()
+				     | 	 \-------> rdt_recv()
+				     |
+				     | pipe(pfd)
+				     *
+				     |\-- fork()
+				     |	 \-------> rdt_send()
+				     |
+				  return
+
+
+
+    5.2  回退N步傳輸
+
+        'rdt' daemone, 'rdt_pipe' function，'struct conn'和停等傳輸相同。
+
+                        Figure b1. The RDT protocol packet
+
+   	     0                   1                   2                   3
+	     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+	    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	    |                       Sequence Number                         |
+	    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	    |   SRC CID#    |    DST CID#   |            Checksum           |
+	    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	    |      Pads     |    Flags      |          Packet length        |
+	    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	    |                             Data                              |
+	    |                             ...                               |
+
+
+
+
+                       Figure b2. The 'rdt_send' function
+
+                                  +----------+
+                                  | select() |
+                                  +----------+
+                                       ^
+                                       |
+                                       |
+             +-------------------------+----------------------------+
+	     |			       |			    |
+	     |			       |			    |
+       	     | 	       	       	       |       	      		    |
+	FD_ISSET(ack)  		  FD_ISSET(data)	      FD_ISSET(timeout)
+	     | 	     		       |        	       	    |
+	     v			       v       	 No		    v
+       	base = ack + 1         	  nextseq<base+N -> do        alarm(time)
+	if (base == nextseq)	       | Yes   	    nothing   to_net(sndpkt[base])
+	    alarm(0)  		       v       	    	      to_net(sndpkt[base+1])
+	else			  make_pkt(nextseq, DATA)     ...
+	    alarm(time)		  to_net(pkt)  	       	      to_net(sndpkt[nextseq-1])
+				  if (nextseq == base)
+				      alarm(time)
+				  nextseq++
+
+
+
+                       Figure b3. The 'rdt_recv' function
+
+			      +--------------+
+			      |	 Read From   | <----------+
+			      |	 Net   	     |		  |
+			      +--------------+		  |
+				      |			  |
+				 ------------  	No  +------------------+
+			        ( ExpSeqNum? )----->| Send ExpSeqNum-1 |
+				 ------------  	    +------------------+
+				      |	Yes
+				      v
+			     Deliver Data to User
+
+			     if (CurrentTime - LastSentAckTime
+				 >= 200ms)
+				 make_pkt(ExpSeqNum, ACK)
+				 to_net(pkt)
+
+
+    5.3 選擇重傳
+
+        選擇重傳使用的函數和數據結構與GBN基本相同，對於發送方長度為N的窗口，每
+        一個序號所對應的緩沖區snddat[i](send_base <= i < send_base + N)，其第
+        一個byte作為標誌位，標識是否收到了Ack；對於接收方長度為N的窗口，由一個
+        鏈表按序號由小到大的順序緩存失序的分組，如果接收到的分組序號等於
+        rcv_base，則將其以及以前緩存的序號連續的分組（起始於rcv_base）交付給上
+        層，並將對應的分組移出列表。
