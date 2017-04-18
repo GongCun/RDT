@@ -38,7 +38,7 @@
 #ifndef UINT32_MAX
 #define UINT32_MAX 4294967295U
 #endif
-
+	       
 int readin;
 typedef enum {CLOSED, LISTEN, WAITING, ESTABLISHED} cstate;
 
@@ -75,8 +75,8 @@ struct rdthdr {
 };
 
 
-/* For user process transfer data */
-struct conn_user {
+/* For user process transfer data */	   
+struct conn_user {				      
         struct in_addr src, dst;
         int scid, dcid;
         int sfd, sndfd, rcvfd;
@@ -85,6 +85,7 @@ struct conn_user {
 	unsigned char *rcvpkt;
         int mss;
 	uint32_t seq, ack;
+	uint32_t cumack;	/* cumulative ack */
 } *conn_user;
 
 /* For exchange info between user and RDT process */

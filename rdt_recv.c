@@ -1,16 +1,29 @@
 #include "rdt.h"
 
+static void sig_alrm(int);
+
 /* Receive network frame from below */
 ssize_t rdt_recv(void *buf, size_t nbyte)
 {
 	int ret, n, ack;
 	struct rdthdr *rptr;
-	struct conn_user *cptr;
-	static struct timeval *tv = NULL;
-	struct timeval curr;
+	static struct conn_user *cptr;
+	static struct itimerval delay;
 
 	cptr = conn_user;
 	ack = cptr->ack;
+
+	if (signal(SIGALRM, sig_alrm) == SIG_ERR)
+		err_sys("signal() error");
+	
+	delay.it_value.tv_sec = 0;
+	delay.it_value.tv_usec = 200000; /* 200 ms */
+	delay.it_interval.tv_sec = 0;
+	delay.it_interval.tv_usec = 200000; /* 200 ms */
+
+	if (setitimer(ITIMER_REAL, &delay, NULL) < 0)
+		err_sys("settimer() error");
+	
 
 	n = read(cptr->rcvfd, cptr->rcvpkt, cptr->mss);
 	rptr = (struct rdthdr *)cptr->rcvpkt;
@@ -36,9 +49,12 @@ ssize_t rdt_recv(void *buf, size_t nbyte)
 		pkt_debug(rptr);
 	}
 
-	/* Now get the correct pkt, ack the partner, and delivery 
+	/*
+	 * Now get the correct pkt, ack the partner, and delivery 
 	 * data to user.
 	 */
+
+	cptr->cumack = ack;
 	n -= RDT_LEN;
 	if (n > nbyte || n < 0)
 		err_quit("recv %d bytes exceed the buf size %d\n", n, nbyte);
@@ -50,44 +66,11 @@ ssize_t rdt_recv(void *buf, size_t nbyte)
 		ret = 0;
 	}
 
-	/*
-	 * Use cumulative acknowledgment, but don't use the timer,
-	 * because:
-	 *
-	 * 1) I don't know how to use the synchronization mechanism to
-	 *    keep the reply ACK right.
-	 *
-	 * 2) It would be dangerous if the signal SIGALRM was called
-	 *    repeatedly.
-	 */
-
-	if (tv == NULL && (tv = malloc(sizeof(struct timeval))) == NULL)
-		err_sys("malloc() tv error");
-
-	if (gettimeofday(&curr, (struct timezone *)NULL) < 0)
-		err_sys("gettimeofday() error");
-
-	if (((curr.tv_sec - tv->tv_sec) * 1000.0 +
-	     (curr.tv_usec - tv->tv_usec) / 1000.0) >= 200.0 || ret == 0) {
-	
-		n = make_pkt(cptr->src, cptr->dst, cptr->scid, cptr->dcid,
-			     ack, RDT_ACK, NULL, 0, cptr->rcvpkt);
-
-		if ((n = to_net(cptr->sfd, cptr->rcvpkt, n, cptr->dst)) < 0)
-			return(n);
-
-		tv->tv_sec = curr.tv_sec;
-		tv->tv_usec = curr.tv_usec;
-	}
-
-	/*
-	 * fprintf(stderr, "rdt_recv(): Ack to_net():\n");
-	 * pkt_debug((struct rdthdr *)(cptr->rcvpkt + IP_LEN));
-	 */
 
 	cptr->ack++;
 
 	if (ret == 0) {
+		sig_alrm(SIGALRM);
 		close(readin); /* notify send process do rdt_fin() */
 	}
 
@@ -95,4 +78,27 @@ ssize_t rdt_recv(void *buf, size_t nbyte)
 
 }
 
+static void sig_alrm(int signo)
+{
+	
+	static unsigned char *buf = NULL;
+	static uint32_t sent = -1;
+	ssize_t n;
+
+	if (conn_user == NULL || conn_user->cumack == sent)
+		return;
+	
+	if (buf == NULL)
+		buf = Malloc(conn_user->mss);
+	
+	n = make_pkt(conn_user->src, conn_user->dst, conn_user->scid, conn_user->dcid,
+		     conn_user->cumack, RDT_ACK, NULL, 0, buf);
+
+	if ((n = to_net(conn_user->sfd, buf, n, conn_user->dst)) < 0)
+		err_sys("to_net() error");
+
+	sent = conn_user->cumack;
+
+	return;
+}
 
