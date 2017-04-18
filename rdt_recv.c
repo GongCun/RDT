@@ -13,9 +13,13 @@ ssize_t rdt_recv(void *buf, size_t nbyte)
 	cptr = conn_user;
 	ack = cptr->ack;
 
+
 	if (signal(SIGALRM, sig_alrm) == SIG_ERR)
 		err_sys("signal() error");
-	
+
+	/*
+	 * Start Ack timer every 200 ms
+	 */
 	delay.it_value.tv_sec = 0;
 	delay.it_value.tv_usec = 200000; /* 200 ms */
 	delay.it_interval.tv_sec = 0;
@@ -50,8 +54,9 @@ ssize_t rdt_recv(void *buf, size_t nbyte)
 	}
 
 	/*
-	 * Now get the correct pkt, ack the partner, and delivery 
-	 * data to user.
+	 * Now get the correct pkt, need to use a separate variable to save
+	 * ack to distinguish between the already confirmed ack or the
+	 * expected sequence, use the ACK timer to send the cumulative ack.
 	 */
 
 	cptr->cumack = ack;
@@ -60,7 +65,7 @@ ssize_t rdt_recv(void *buf, size_t nbyte)
 		err_quit("recv %d bytes exceed the buf size %d\n", n, nbyte);
 
 	if (n > 0) {
-		memcpy(buf, (void *)cptr->rcvpkt + RDT_LEN, n);
+		memcpy(buf, (void *)cptr->rcvpkt + RDT_LEN, n); /* copy the data to user */
 		ret = n;
 	} else {
 		ret = 0;
