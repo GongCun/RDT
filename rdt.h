@@ -13,7 +13,7 @@
 
 #define ranport() ((getpid() & 0xfff) | 0x8000)
 #define FILTER "ip[9:1] == 143"
-#define PCAP_TIMEOUT 500 /* 500 milliseconds */
+#define PCAP_TIMEOUT 2 /* 2 milliseconds */
 
 #define RDT_UX_SOCK "/tmp/RDTUXSock" /* Unix Domain Socket for User IPC */
 #define RDT_FIFO "/tmp/RDTFifo" /* FIFO pipe for User IPC */
@@ -24,28 +24,46 @@
 #define CLOSE_WAIT 20
 
 #undef MAXLINE
-#define MAXLINE 1472 /* 1500 - 20 - 8 */
+#define MAXLINE 1468 /* 1500 - 20 - 12 */
 
+#define WINSIZE 30
+
+/*
+ * If seqnum is type of uint32_t, no need the const value and mod 2^32:
+ *
+ *     x mod y = (x & (y-1))
+ *
+ * Because 'UINT32_MAX + 1 = 0'
+ */
+#ifndef UINT32_MAX
+#define UINT32_MAX 4294967295U
+#endif
+
+int readin;
 typedef enum {CLOSED, LISTEN, WAITING, ESTABLISHED} cstate;
 
 /*
  *  0                   1                   2                   3
  *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |   SRC CID#    |    DST CID#   |   Seq(0/1)    |     Flags     |
+ * |                       Sequence Number                         |
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |         Packet length         |            Checksum           |
+ * |   SRC CID#    |    DST CID#   |            Checksum           |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |      Pads     |    Flags      |          Packet length        |
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  * |                             Data...                           |
  *
  */
 
 struct rdthdr {
+        uint32_t rdt_seq;
         uint8_t rdt_scid;
         uint8_t rdt_dcid;
-        uint8_t rdt_seq;
 #define RDT_SEQ0 0x00
 #define RDT_SEQ1 0x01
+        uint16_t rdt_sum; /* chksum _CAN'T_ put at the end */
+        uint8_t rdt_pads;
         uint8_t rdt_flags;
 #define RDT_FIN  0x01 /* finish request */
 #define RDT_CONF 0x02 /* confirm close, no use */
@@ -54,7 +72,6 @@ struct rdthdr {
 #define RDT_DATA 0x10
 #define RDT_ACK  0x20 /* data and fin confirm */
         uint16_t rdt_len;
-        uint16_t rdt_sum;
 };
 
 
@@ -63,10 +80,11 @@ struct conn_user {
         struct in_addr src, dst;
         int scid, dcid;
         int sfd, sndfd, rcvfd;
+        unsigned char *snddat[WINSIZE];
         unsigned char *sndpkt;
 	unsigned char *rcvpkt;
         int mss;
-	int seq, ack;
+	uint32_t seq, ack;
 } *conn_user;
 
 /* For exchange info between user and RDT process */
@@ -89,17 +107,12 @@ struct conn *closePtr;
 
 /*--------------------------------*/
 
-struct conn_ret {
-        int ret;
-        int err;
-};
-
 extern char dev[IFNAMSIZ];
 extern int linktype;
 extern int mtu;
 
 struct in_addr get_addr(struct in_addr dst);
-ssize_t make_pkt(struct in_addr src, struct in_addr dst, int scid, int dcid, int seq, int flags, void *data, size_t nbyte, void *buf);
+ssize_t make_pkt(struct in_addr src, struct in_addr dst, int scid, int dcid, uint32_t seq, uint8_t flags, void *data, size_t nbyte, void *buf);
 ssize_t to_net(int fd, const void *buf, size_t nbyte, struct in_addr dst);
 void from_net(void);
 int get_dev(struct in_addr addr, char *dev);
@@ -121,7 +134,7 @@ void conn_user_debug(struct conn_user *);
 
 ssize_t get_pkt(int fd, struct conn_info *ciptr, u_char *buf, ssize_t buflen);
 ssize_t pass_pkt(int fd, struct conn_info *ciptr, u_char *buf, ssize_t buflen);
-ssize_t rdt_send(void *buf, size_t nbyte);
+int rdt_send(int);
 ssize_t rdt_recv(void *buf, size_t nbyte);
 void rdt_fin(void); /* close active */
 void rdt_close(void); /* close passive */

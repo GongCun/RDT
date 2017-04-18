@@ -81,18 +81,22 @@ int pkt_arrive(struct conn *cptr, const u_char *pkt, int len)
                          * will cause an EPIPE error, we just
                          * cleanup the states for reuse.
                          */
+again:
                         if (rdthdr->rdt_flags == RDT_ACK)
                                 n = write(cptr->sndfd, (u_char *) (pkt + size_ip), len - size_ip);
                         else
                                 n = write(cptr->rcvfd, (u_char *) (pkt + size_ip), len - size_ip);
 
-                        if (n < 0 && errno != EWOULDBLOCK && errno != EAGAIN) {
-                                close(cptr->sndfd);
-                                close(cptr->rcvfd);
-                                bzero(cptr, sizeof(struct conn));
-                                cptr->cstate = CLOSED;
-                                fprintf(stderr, "pkt_arrive(): ESTABLISHED -> CLOSED\n");
-                        } else if (n > 0) {
+			if (n < 0) {
+				if (errno != EWOULDBLOCK && errno != EAGAIN) {
+					close(cptr->sndfd);
+					close(cptr->rcvfd);
+					bzero(cptr, sizeof(struct conn));
+					cptr->cstate = CLOSED;
+					fprintf(stderr, "pkt_arrive(): ESTABLISHED -> CLOSED\n");
+				} else
+					goto again;
+			} else if (n > 0) {
                                 fprintf(stderr, "pkt_arrive(): ESTABLISHED pass %zd bytes to user\n", n);
                         }
 

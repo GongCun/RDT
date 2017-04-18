@@ -9,7 +9,7 @@ static void sig_hand(int signo)
 
 int rdt_connect(struct in_addr dst, int scid, int dcid)
 {
-        int n, fd;
+        int i, n, fd;
         pid_t pid;
         struct sockaddr_un un;
         struct in_addr src;
@@ -51,6 +51,10 @@ int rdt_connect(struct in_addr dst, int scid, int dcid)
                 err_sys("malloc() sndpkt error");
         if ((conn_user->rcvpkt = malloc(n)) == NULL)
                 err_sys("malloc() rcvpkt error");
+        for (i = 0; i < WINSIZE; i++) {
+                if ((conn_user->snddat[i] = malloc(n)) == NULL)
+                        err_sys("malloc() snddat[%d] error", i);
+        }
 
         if ((fd = ux_cli(RDT_UX_SOCK, &un)) < 0)
                 err_sys("ux_cli() error");

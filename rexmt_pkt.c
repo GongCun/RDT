@@ -23,8 +23,6 @@ ssize_t rexmt_pkt(struct conn_user *cptr, uint8_t flag, void *buf, size_t nbyte)
 
         rtt_newpack(rptr);
 
-        /* conn_user_debug(cptr); */
-
 rexmt:
         n = make_pkt(cptr->src, cptr->dst, cptr->scid, cptr->dcid,
                         seq, flag, buf, nbyte, cptr->sndpkt);

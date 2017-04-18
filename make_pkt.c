@@ -1,7 +1,7 @@
 #include "rdt.h"
 
 
-ssize_t make_pkt(struct in_addr src, struct in_addr dst, int scid, int dcid, int seq, int flags, void *data, size_t nbyte, void *buf)
+ssize_t make_pkt(struct in_addr src, struct in_addr dst, int scid, int dcid, uint32_t seq, uint8_t  flags, void *data, size_t nbyte, void *buf)
 {
         struct ip *ip;
         struct rdthdr *rdthdr;
