@@ -9,13 +9,15 @@
 
 LIBTCPI = $(ROOT)/libtcpi.a
 PLATFORM=$(shell uname -s | tr '[:lower:]' '[:upper:]')
-override CFLAGS += -D_$(PLATFORM) -g
+override CFLAGS += -D_$(PLATFORM) -g \
+	 	   -qflag=i:i -qinfo=use:nouset:noeff
 override LIBS += $(LIBTCPI)
 override CPPFLAGS += -I$(ROOT)/lib
 
-CC=gcc
+CC=xlc
 COMPILE.c=$(CC) $(CFLAGS) $(CPPFLAGS) -c
 LINK.c=$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $(LIBS)
+
 RANLIB=ranlib
 AR=ar
 AWK=awk
