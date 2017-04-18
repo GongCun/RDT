@@ -1,8 +1,8 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ([2.63])
-AC_INIT([FULL-PACKAGE-NAME],[VERSION],[BUG-REPORT-ADDRESS])
+# AC_PREREQ([2.63])
+AC_INIT([RDT],[v1.0],[gong_cun@bocmacau.com])
 AC_CONFIG_SRCDIR([lib/tcpi.h])
 AC_CONFIG_HEADERS([config.h])
 
@@ -36,6 +36,8 @@ AC_CHECK_HEADERS(ifaddrs.h)
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_TYPE_SIZE_T
+AC_TYPE_SSIZE_T
+AC_TYPE_UINT32_T
 AC_CHECK_MEMBERS([struct ifreq.ifr_mtu], [], [],
 [#include <sys/types.h>
 #include <sys/socket.h>
@@ -94,6 +96,8 @@ AC_CHECK_TYPE([struct ifaddrs], [AC_DEFINE(HAVE_IFADDRS_STRUCT, 1, [Define to 1 
 #AC_FUNC_MALLOC
 AC_CHECK_FUNCS([bzero socket strchr strerror vsnprintf sysctl])
 AC_CHECK_FUNCS([getifaddrs freeifaddrs])
+AC_CHECK_FUNCS([pcap_freecode pcap_breakloop])
+
 
 # Check for system services.
 
@@ -117,5 +121,4 @@ if test $ac_cv_ipv6 = yes; then
 	AC_DEFINE([IPv6], 1, [Define to 1 if the system supports IPv6])
 fi
 
-#AC_CONFIG_FILES([lib/Makefile])
 AC_OUTPUT

@@ -1,20 +1,25 @@
-override CFLAGS += -I../lib -g $(shell ../cflags.sh | cut -d'%' -f1)
-LIBS = $(shell ../cflags.sh | cut -d'%' -f2)
-define \n
+#  CC          C compiler command
+#  CFLAGS      C compiler flags
+#  LDFLAGS     linker flags, e.g. -L<lib dir> if you have libraries in a
+#              nonstandard directory <lib dir>
+#  LIBS        libraries to pass to the linker, e.g. -l<library>
+#  CPPFLAGS    (Objective) C/C++ preprocessor flags, e.g. -I<include dir> if
+#              you have headers in a nonstandard directory <include dir>
+#  CPP         C preprocesso
 
 
-endef
-ifeq ($(LIBS), )
-$(error Can't find the libpcap${\n}You can export LIBDIR=<lib dir> to search the library)
-endif
-LIBS := ../libtcpi.a $(LIBS)
+PLATFORM=$(shell uname -s | tr '[:lower:]' '[:upper:]')
+override CFLAGS += -D_$(PLATFORM) -g
+override LIBS += -ltcpi
+override LDFLAGS += -L../
+override CPPFLAGS += -I../lib
 
-PLATFORM = $(shell uname -s | tr 'a-z' 'A-Z')
-ifeq ($(PLATFORM),AIX)
-AROPT = -rv -Xany
-else
-AROPT = rv
-endif
+CC=gcc
+COMPILE.c=$(CC) $(CFLAGS) $(CPPFLAGS) -c
+LINK.c=$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $(LIBS)
+RANLIB=ranlib
+AR=ar
+AWK=awk
 
 CLEANFILES = core core.* *.core *.o temp.* *.a *.so configure config.log config.status auto* config.h.in* *.BAK *~ *.dSYM
 

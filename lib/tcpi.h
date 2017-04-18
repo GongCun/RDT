@@ -120,31 +120,10 @@ struct ifi_info *get_ifi_info(void); /* only for inet4 */
 struct ifi_info *Get_ifi_info(void); /* wrap get_ifi_info() */
 void free_ifi_info(struct ifi_info *);
 
-
 /* Check sum */
 uint16_t checksum(uint16_t *, int);
 int do_checksum(u_char *buf, int protocol, int len);
 uint32_t in_checksum(uint16_t * addr, int len);
-
-/*
- * ICMPv4 packet assemblers
- */
-ssize_t icmp_recv(int, u_char *, size_t, struct sockaddr *, socklen_t *, u_char **);
-
-void icmp_build_mask(u_char *, int, uint8_t, uint8_t, uint16_t, uint16_t, uint32_t);
-
-void
-icmp_build_time(u_char * buf, int len, uint8_t type, uint8_t code, uint16_t id, uint16_t seq, uint32_t origtime, uint32_t recvtime, uint32_t xmittime);
-
-void icmp_build_echo(u_char * buf, int len, uint8_t type, uint8_t code, uint16_t id, uint16_t seq, u_char *data);
-
-void icmp_build_redirect(u_char *buf, int len, uint8_t type, uint8_t code, struct in_addr gateway, u_char *data);
-
-void icmp_build_selection(u_char *buf, uint8_t type, uint8_t code);
-void icmp_build_advertisment(u_char *buf, uint8_t type, uint8_t code, u_char naddr, struct in_addr *addrlist);
-
-/* Name and address conversions */
-void xgethostbyname(const char *host, struct in_addr *addr);
 
 
 /* pcap functions */
@@ -153,22 +132,11 @@ pcap_t *open_pcap(const char *device, int to_ms, char *cmd, int *linktype, struc
 void dispatch_pcap(pcap_t *pt, struct bpf_program *, handler callback, int cnt);
 void loop_pcap(pcap_t *pt, struct bpf_program *bp, handler callback, int cnt);
 
-void udp_write(int fd, char *buf, int userlen, struct in_addr src, struct in_addr dst, u_short sport, u_short dport, struct sockaddr *to, socklen_t tolen);
 
 /* signal functions */
 typedef void (*signal_func_t)(int);
 signal_func_t signal_intr(int sig, signal_func_t func);
-signal_func_t xsignal(int sig, signal_func_t func);
-
-/* multicast functions */
-int mcast_join(int sockfd, const char *dev, char *maddr);
-
-/*
- * Use IP_RECVDSTADDR option and recvmsg() to get
- * the destination IP address of received UDP datagram.
- */
-ssize_t
-recvdst(int, char *, size_t, int *, struct sockaddr *, socklen_t *, struct in_addr *);
+signal_func_t Signal(int sig, signal_func_t func);
 
 /*
  * For Unique Connections of Unix Domain Sockets.

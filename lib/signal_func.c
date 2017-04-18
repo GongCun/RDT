@@ -14,7 +14,7 @@ signal_func_t signal_intr(int sig, signal_func_t func)
         return(oact.sa_handler);
 }
 
-signal_func_t xsignal(int sig, signal_func_t func)
+signal_func_t Signal(int sig, signal_func_t func)
 {
         struct sigaction act, oact;
         act.sa_handler = func;
