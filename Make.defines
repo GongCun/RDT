@@ -10,7 +10,7 @@
 LIBTCPI=$(ROOT)/libtcpi.a
 PLATFORM=$(shell uname -s | tr '[:lower:]' '[:upper:]')
 LIBS=-L/usr/lib $(LIBTCPI) -lpcap
-override CFLAGS += -D_$(PLATFORM) -g
+override CFLAGS += -D_$(PLATFORM) -g -Wall
 override CPPFLAGS += -I/usr/include -I$(ROOT)/lib -I$(ROOT)
 	 	     
 
@@ -22,5 +22,5 @@ AR=ar
 AWK=awk
 
 CLEANFILES = core core.* *.core *.o temp.* *.a *.so configure config.log \
-	     config.status auto* config.h.in* *.BAK *~ *.dSYM
+	     config.status auto* config.h.in* *.BAK *~ *.dSYM config.h
 

@@ -97,6 +97,7 @@ AC_CHECK_TYPE([struct ifaddrs], [AC_DEFINE(HAVE_IFADDRS_STRUCT, 1, [Define to 1 
 AC_CHECK_FUNCS([bzero socket strchr strerror vsnprintf sysctl])
 AC_CHECK_FUNCS([getifaddrs freeifaddrs])
 AC_CHECK_FUNCS([pcap_freecode pcap_breakloop])
+AC_CHECK_FUNCS([setitimer], [], [AC_MSG_ERROR([cannot find setitimer])])
 
 
 # Check for system services.

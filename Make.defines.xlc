@@ -23,5 +23,5 @@ AR=ar
 AWK=awk
 
 CLEANFILES = core core.* *.core *.o temp.* *.a *.so configure config.log \
-	     config.status auto* config.h.in* *.BAK *~ *.dSYM 
+	     config.status auto* config.h.in* *.BAK *~ *.dSYM config.h
 
