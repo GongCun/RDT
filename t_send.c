@@ -22,12 +22,16 @@ int main(int argc, char *argv[])
 	rdt_pipe(fd);
 
 	while ((n = read(0, buf, MAXLINE)) > 0) {
-		if (write(fd[1], buf, n) != n && errno != EWOULDBLOCK && errno != EAGAIN)
-			err_sys("write() error");
+again:
+		if (write(fd[1], buf, n) != n) {
+                        if (errno == EWOULDBLOCK || errno == EAGAIN)
+                                goto again;
+                        else
+                                err_sys("write() error");
+                }
 		if ((n = read(fd[0], buf, MAXLINE)) > 0)
 			write(1, buf, n);
 	}
-        /* rdt_close(); */
 
         return(0);
 }

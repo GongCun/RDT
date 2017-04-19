@@ -23,9 +23,19 @@ int main(int argc, char *argv[])
         rdt_listen(src, scid);
 	rdt_pipe(fd);
 
-	while ((n = read(fd[0], buf, MAXLINE)) > 0)
-		if (write(fd[1], buf, n) != n && errno != EWOULDBLOCK && errno != EAGAIN)
-			err_sys("write() error");
+	while ((n = read(fd[0], buf, MAXLINE)) > 0) {
+                /*
+                 * fprintf(stderr, "t_recv() read %d bytes:\n", n);
+                 * write(2, buf, n);
+                 */
+again:
+		if (write(fd[1], buf, n) != n) {
+                       if (errno == EWOULDBLOCK || errno == EAGAIN)
+                               goto again;
+                       else
+                               err_sys("write() error");
+                }
+        }
 
         return(0);
 }

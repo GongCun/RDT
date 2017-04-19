@@ -21,7 +21,7 @@
        | |               by FIFO        |     / Pass pkt | Capture
        | |                              v    v  by FIFO  | pkt
        | | Recv pkt from FIFO      +--------+            |
-       | +------------------------ |FIFO    |      +--------+
+       | +------------------------ |FIFOs   |      +--------+
        +-------------------------> |RawSock |----->|external|
            Send pkt by Raw Sock    +--------+ Send +--------+
                                               pkt
