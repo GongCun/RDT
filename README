@@ -166,8 +166,8 @@ ______________________________________________________________________________
         非對稱釋放方法較為粗暴，可能會導致數據丟失。使用對稱釋放方式，
         每個方向被單獨釋放，兩個方向互不影響。在這種方法中，即使當主機
         發送了DICONNECT數據包之後，仍然可以接收數據，這也是TCP socket
-        中shutdown(2)函數的由來：允許半關閉一個全雙工連接。但是對稱釋
-        放的方式並不總是可以正確地工作，請參考兩軍問題（two-army
+        中shutdown(2)函數的由來：允許半關閉一個全雙工連接。但是對稱釋放
+        的方式並不總是可以正確地工作，請參考兩軍問題（wiki: two-army
         problem）。
 
         RDP參考了TCP釋放連接的過程，採用了對稱關閉來釋放連接。
@@ -733,8 +733,7 @@ start_timer      --> \        /<-\         / \  above  /<--  ________________
                acknowledgment），表面接收方已正確接收到序號n以前（包括n）的所
                有分組。TCP中的累積確認是通過200ms的定時器來實現的（如果開啟
                Nagle算法，交互數據流可能出現明顯的時延，因此Putty等交互終端默
-               認關閉Nagle算法）。在RDT中，為了減少複雜性（同步機制以及防止信
-               號的重複調用），單純通過計算時延（200ms）實現。
+               認關閉Nagle算法）。在RDT中，使用200ms作為ACK延遲計時器。
 
             c) 超時事件。協議的名字“Go-Back-N”是根據出現丟失和過度時延分組時發
                送方的行為而得出的。就像在停等協議中那樣，定時器將再次用於恢復
@@ -899,6 +898,11 @@ start_timer      --> \        /<-\         / \  above  /<--  ________________
 
 4  安裝函數接口說明
 
+    安裝前提：除編譯器之外，需要系統安裝GNU make/autoconf，以及libpcap develop
+    套件。
+    
+    RDT可以在GNU/Linux, Mac OS X和AIX上編譯運行，但目前只支持IPv4。
+
     4.1  安裝
 
         % autoheader -I./lib
@@ -907,8 +911,6 @@ start_timer      --> \        /<-\         / \  above  /<--  ________________
 	% make
 	
     4.2  函數接口
-
-        RDT目前只支持IPv4。
 
     	API Syntax
 
@@ -1145,10 +1147,10 @@ start_timer      --> \        /<-\         / \  above  /<--  ________________
 				      v
 			     Deliver Data to User
 
-			     if (CurrentTime - LastSentAckTime
-				 >= 200ms)
-				 make_pkt(ExpSeqNum, ACK)
-				 to_net(pkt)
+                             if (ACK　timer expired) {
+                                 make_pkt(CumulativeSeq, ACK)
+                                 to_net(pkt)
+                             }           
 
 
     5.3 選擇重傳
