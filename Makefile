@@ -6,7 +6,7 @@ else
 	include $(ROOT)/Make.defines
 endif
 
-
+LIBRDT = librdt.a
 PROGS = t_send t_recv rdt
 OBJS  = get_addr.o get_dev.o get_mtu.o make_pkt.o to_net.o \
 	from_net.o krdt_connect.o make_sock.o oper_fifo.o \
@@ -16,21 +16,25 @@ OBJS  = get_addr.o get_dev.o get_mtu.o make_pkt.o to_net.o \
 	rdt_send.o rdt_recv.o rdt_close.o conn_debug.o rdt_pipe.o \
 	conn_alloc.o rdt_fin.o
 
-all: ${PROGS}
+all: ${PROGS} ${LIBRDT}
 
-rdt: rdt.o ${OBJS} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $(filter %.o,$^) $(LIBS)
+rdt: 	rdt.o ${LIBRDT} $(LIBTCPI)
+	${CC} ${CFLAGS} -o $@ $< $(LIBRDT) $(LIBS)
 
-t_send: t_send.o ${OBJS} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $(filter %.o,$^) $(LIBS)
+t_send:	t_send.o ${LIBRDT} $(LIBTCPI)
+	${CC} ${CFLAGS} -o $@ $< $(LIBRDT) $(LIBS)
 
-t_recv: t_recv.o ${OBJS} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $(filter %.o,$^) $(LIBS)
+t_recv: t_recv.o ${LIBRDT} $(LIBTCPI)
+	${CC} ${CFLAGS} -o $@ $< $(LIBRDT) $(LIBS)
 
 ${OBJS}: rdt.h
 
 ${LIBTCPI}:
 	cd $(ROOT)/lib && $(MAKE)
+
+${LIBRDT}: ${OBJS}
+	$(AR) rv $(LIBRDT) $?
+	$(RANLIB) $(LIBRDT)
 
 clean:
 	cd $(ROOT)/lib && $(MAKE) clean
