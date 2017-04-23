@@ -19,13 +19,13 @@ OBJS  = get_addr.o get_dev.o get_mtu.o make_pkt.o to_net.o \
 all: ${PROGS} ${LIBRDT}
 
 rdt: 	rdt.o ${LIBRDT} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $< $(LIBRDT) $(LIBS)
+	${CC} ${CFLAGS} -o $@ $< $(LIBS) -L. -lrdt
 
 t_send:	t_send.o ${LIBRDT} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $< $(LIBRDT) $(LIBS)
+	${CC} ${CFLAGS} -o $@ $< $(LIBS) -L. -lrdt
 
 t_recv: t_recv.o ${LIBRDT} $(LIBTCPI)
-	${CC} ${CFLAGS} -o $@ $< $(LIBRDT) $(LIBS)
+	${CC} ${CFLAGS} -o $@ $< $(LIBS) -L. -lrdt
 
 ${OBJS}: rdt.h
 
